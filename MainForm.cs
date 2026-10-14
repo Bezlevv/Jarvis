@@ -5,7 +5,7 @@ namespace Jarvis;
 public sealed class MainForm : Form
 {
     // ----- Шапка -----
-    private readonly Panel _header = new() { Dock = DockStyle.Top, Height = 88 };
+    private readonly Panel _header = new() { Dock = DockStyle.Top, Height = 96 };
 
     // ----- Левая панель -----
     private readonly Panel _sidebar = new() { Dock = DockStyle.Left, Width = 214 };
@@ -61,6 +61,13 @@ public sealed class MainForm : Form
     private string? _modelPath;
     private bool _busy;
 
+    // ----- Режим пробуждения по слову «Джарвис» -----
+    private static readonly string[] WakeWords =
+        { "джарвис", "джервис", "джарвес", "джервис", "джарвас", "джервас", "jarvis", "jarvas" };
+    private const int AwakeSeconds = 10; // сколько секунд слушает команду после пробуждения
+    private DateTime _awakeUntil = DateTime.MinValue;
+    private readonly System.Windows.Forms.Timer _awakeTimer = new() { Interval = AwakeSeconds * 1000 };
+
     public MainForm()
     {
         Text = "JARVIS — голосовой ассистент";
@@ -68,8 +75,8 @@ public sealed class MainForm : Form
         ForeColor = Theme.Text;
         Font = new Font("Segoe UI", 9.5f);
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(900, 600);
-        Size = new Size(960, 660);
+        MinimumSize = new Size(760, 500);
+        Size = new Size(960, 640);
 
         _processor = new CommandProcessor(msg => AppendLine("  " + msg, Theme.TextDim));
 
@@ -78,7 +85,30 @@ public sealed class MainForm : Form
         _micButton.Clicked += async (_, _) => await ToggleAsync();
         _btnClear.Click += (_, _) => _log.Clear();
         _chkSpeak.CheckedChanged += (_, _) => _speaker.Enabled = _chkSpeak.Checked;
-        Load += async (_, _) => await LoadModelAsync();
+        _awakeTimer.Tick += (_, _) =>
+        {
+            _awakeTimer.Stop();
+            if (_engine != null)
+            {
+                _engine.Awake = false; // усыпаем обратно
+                SetStatus("СЛУШАЮ", Theme.Accent);
+            }
+        };
+    }
+
+    /// <summary>Подгоняет размер окна под рабочую область экрана (с учётом масштаба DPI).</summary>
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+
+        var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
+        float scale = DeviceDpi / 96f;
+        int w = (int)Math.Min(960, wa.Width * 0.92f / scale);
+        int h = (int)Math.Min(640, wa.Height * 0.88f / scale);
+        if (w >= MinimumSize.Width && h >= MinimumSize.Height)
+            Size = new Size(w, h);
+
+        _ = LoadModelAsync();
     }
 
     private void BuildLayout()
@@ -99,18 +129,18 @@ public sealed class MainForm : Form
             g.FillRectangle(line, 0, _header.Height - 2, _header.Width, 2);
 
             // Заголовок
-            using var titleFont = new Font("Segoe UI", 24, FontStyle.Bold);
+            using var titleFont = new Font("Segoe UI", 22, FontStyle.Bold);
             using var titleBrush = new SolidBrush(Theme.Accent);
-            g.DrawString("JARVIS", titleFont, titleBrush, new Point(20, 8));
+            g.DrawString("JARVIS", titleFont, titleBrush, new Point(20, 10));
 
             using var subFont = new Font("Segoe UI", 9.5f);
             using var subBrush = new SolidBrush(Theme.TextDim);
             g.DrawString("голосовой ассистент для домашнего компьютера", subFont, subBrush,
-                new Point(22, 0), new StringFormat { LineAlignment = StringAlignment.Center });
+                new Point(22, 58));
 
             // Статус справа
             var pillSize = _statusPill.Size;
-            _statusPill.Location = new Point(_header.Width - pillSize.Width - 22, 28);
+            _statusPill.Location = new Point(_header.Width - pillSize.Width - 24, 34);
             _statusPill.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         };
         _header.Resize += (_, _) => _header.Invalidate();
@@ -126,11 +156,14 @@ public sealed class MainForm : Form
 
         var hintLabel = new Label
         {
-            Text = "F9 — вкл/выкл микрофон",
-            AutoSize = true,
+            Text = "F7 — вкл/выкл",
+            AutoSize = false,
+            Width = 186,
+            Height = 20,
+            TextAlign = ContentAlignment.MiddleCenter,
             ForeColor = Theme.TextDim,
             Font = new Font("Segoe UI", 8.5f),
-            Location = new Point(44, 244)
+            Location = new Point(14, 244)
         };
         _sidebar.Controls.Add(hintLabel);
 
@@ -171,16 +204,16 @@ public sealed class MainForm : Form
         Controls.Add(_header);
         _header.Controls.Add(_statusPill);
 
-        AppendLine("Джарвис запущен. Нажмите кнопку микрофона или F9 и говорите.", Theme.TextDim);
-        AppendLine("Пример: «открой блокнот», «громче», «который час», «поищи погоду в Москве».",
-            Theme.TextDim);
+        AppendLine("Джарвис запущен. Микрофон включится автоматически.", Theme.TextDim);
+        AppendLine("Обращайтесь по имени: «Джарвис, открой блокнот», «Джарвис, который час».", Theme.TextDim);
+        AppendLine("Скажите «Джарвис» без команды — он ответит и будет слушать 10 секунд.", Theme.TextDim);
         AppendLine("", Theme.TextDim);
     }
 
-    /// <summary>F9 — старт/стоп микрофона.</summary>
+    /// <summary>F7 — старт/стоп микрофона.</summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        if (keyData == Keys.F9)
+        if (keyData == Keys.F7)
         {
             _ = ToggleAsync();
             return true;
@@ -196,7 +229,8 @@ public sealed class MainForm : Form
         {
             _modelPath = await Task.Run(() => ModelManager.EnsureModel(msg => BeginInvoke(() => SetStatus("ЗАГРУЗКА МОДЕЛИ...", Theme.Warning))));
             SetStatus("ГОТОВ", Theme.Success);
-            AppendLine("Модель распознавания речи загружена. Микрофон готов к работе.", Theme.TextDim);
+            AppendLine("Модель загружена. Включаю микрофон...", Theme.TextDim);
+            _ = ToggleAsync(); // слушаем всегда — ждём слова «Джарвис»
         }
         catch (Exception ex)
         {
@@ -230,6 +264,8 @@ public sealed class MainForm : Form
                         BeginInvoke(() => _partialLabel.Text = "  Слышу: " + text);
                     e.FinalResult += text =>
                         BeginInvoke(() => OnFinalPhrase(text));
+                    e.WakeDetected += () =>
+                        BeginInvoke(OnWakeDetected);
                     e.Start();
                     return e;
                 });
@@ -251,26 +287,98 @@ public sealed class MainForm : Form
         }
         else
         {
-            _engine.Stop();
-            _engine.Dispose();
-            _engine = null;
-            _micButton.IsListening = false;
-            _partialLabel.Text = "";
-            SetStatus("ОСТАНОВЛЕН", Theme.TextDim);
+            StopEngine();
         }
     }
 
+    private void StopEngine()
+    {
+        _engine?.Stop();
+        _engine?.Dispose();
+        _engine = null;
+        _awakeTimer.Stop();
+        _awakeUntil = DateTime.MinValue;
+        _micButton.IsListening = false;
+        _partialLabel.Text = "";
+        SetStatus("ОСТАНОВЛЕН", Theme.TextDim);
+    }
+
+    /// <summary>Сработало слово пробуждения (из грамматического распознавателя).</summary>
+    private void OnWakeDetected()
+    {
+        if (_engine == null) return;
+        _awakeUntil = DateTime.Now.AddSeconds(AwakeSeconds);
+        _awakeTimer.Stop();
+        _awakeTimer.Start();
+        SetStatus("СЛУШАЮ ВАС", Theme.AccentPurple);
+        AppendLine("  🔵 Проснулся. Говорите команду (10 секунд).", Theme.Accent);
+        _speaker.Speak("Слушаю.");
+    }
+
+    /// <summary>Обработка сказанной фразы: пробуждение по слову «Джарвис», затем команда.</summary>
     private void OnFinalPhrase(string text)
     {
         _partialLabel.Text = "";
-        if (string.IsNullOrWhiteSpace(text)) return;
+        var t = text.Trim().ToLowerInvariant().Replace('ё', 'е');
+        DebugLog.Write($"ФРАЗА: [{text}]");
+        if (t.Length == 0) return;
 
         AppendLine("  Вы: " + text, Theme.UserLine);
+
+        bool hasWake = WakeWords.Any(w => t.Contains(w));
+
+        // Убираем обращение из фразы — остаётся только команда
+        string command = t;
+        foreach (var w in WakeWords)
+            command = command.Replace(w, " ");
+        command = string.Join(' ', command.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        DebugLog.Write($"wake={hasWake}, команда=[{command}]");
+
+        if (hasWake)
+        {
+            // Проснулись: 10 секунд на команду
+            if (_engine != null) _engine.Awake = true;
+            _awakeUntil = DateTime.Now.AddSeconds(AwakeSeconds);
+            _awakeTimer.Stop();
+            _awakeTimer.Start();
+            SetStatus("СЛУШАЮ ВАС", Theme.AccentPurple);
+
+            if (command.Length == 0)
+            {
+                AppendLine("  Джарвис: Да, я слушаю вас.", Theme.Text);
+                _speaker.Speak("Слушаю вас.");
+                return;
+            }
+
+            // «Джарвис, выключись» — усыпляем ассистента
+            var words = command.Split(' ');
+            if (words.Contains("выключись") || words.Contains("стоп") || words.Contains("спи") ||
+                words.Contains("отбой") || words.Contains("остановись"))
+            {
+                AppendLine("  Джарвис: Усыпляюсь. Скажите «Джарвис», чтобы разбудить.", Theme.Text);
+                _speaker.Speak("Усыпляюсь.");
+                StopEngine();
+                return;
+            }
+        }
+        else if (DateTime.Now > _awakeUntil)
+        {
+            // Не проснулся и не в активном окне — игнорируем фоновую речь
+            AppendLine("  (нет обращения «Джарвис» — пропущено)", Theme.TextDim);
+            return;
+        }
+
+        ExecuteCommand(command);
+    }
+
+    private void ExecuteCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return;
 
         string? response;
         try
         {
-            response = _processor.Process(text);
+            response = _processor.Process(command);
         }
         catch (Exception ex)
         {
@@ -280,7 +388,7 @@ public sealed class MainForm : Form
 
         if (response != null)
         {
-            AppendLine("  " + response, Theme.Text);
+            AppendLine("  Джарвис: " + response, Theme.Text);
             _speaker.Speak(response);
         }
         else

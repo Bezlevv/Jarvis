@@ -71,6 +71,20 @@ public sealed class CommandProcessor
         if (Has(t, "спасибо", "благодарю"))
             return "Пожалуйста!";
 
+        // ---------- Простая болтовня ----------
+        if (Has(t, "тупой", "тупый", "дурак", "идиот", "глупый", "тупица"))
+            return "Команды-то ваши неразборчивы. Попробуем ещё разок, я поднатужусь?";
+        if (Has(t, "как дела", "как ты", "как жизнь", "как настроение"))
+            return "Отлично: слушаю и жду ваших команд. У вас как настроение?";
+        if (Has(t, "ты кто", "как тебя зовут", "представься", "ты человек", "ты живой"))
+            return "Я Джарвис — голосовой ассистент вашего компьютера. Управляю системой и браузером.";
+        if (Has(t, "молодец", "умница", "хороший ассистент", "спасибо что"))
+            return "Спасибо, стараюсь.";
+        if (Has(t, "шутка", "пошути", "анекдот"))
+            return "Два программиста уходят в бар, потому что один минус один — это не два.";
+        if (Has(t, "алиса", "alice"))
+            return "Алиса — это голосовой ассистент Яндекса, а я Джарвис. Живу у вас на компьютере и ни с кем не путаюсь.";
+
         // ---------- Отмена выключения (до команд выключения!) ----------
         if (Has(t, "отмени выключ", "отмена выключ", "отмени перезагруз", "отмени завершение", "не выключай"))
         {
@@ -86,6 +100,23 @@ public sealed class CommandProcessor
             var culture = CultureInfo.GetCultureInfo("ru-RU");
             var day = culture.DateTimeFormat.GetDayName(DateTime.Now.DayOfWeek);
             return $"Сегодня {day}, {DateTime.Now.ToString("d MMMM yyyy", culture)}.";
+        }
+
+        // ---------- Погода (бесплатный API Open-Meteo) ----------
+        if (Has(t, "погод", "прогноз", "какая температура", "градус за окном"))
+        {
+            var city = Strip(t, "погода", "погоды", "погодке", "прогноз", "прогноз погоды",
+                "какая", "какой", "сколько", "будет", "завтра", "сегодня",
+                "послезавтра", "уточни", "сделай", "знать");
+            try
+            {
+                return WeatherService.GetForecastAsync(city).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                _log("Ошибка погоды: " + ex.Message);
+                return "Не получилось получить прогноз погоды. Проверьте интернет.";
+            }
         }
 
         // ---------- Звук и громкость ----------
@@ -121,9 +152,9 @@ public sealed class CommandProcessor
                 var v = SystemController.SetVolumePercent(0);
                 return "Громкость 0%.";
             }
-            var match = Regex.Match(t, @"\b(\d{1,3})\b");
-            if (match.Success && int.TryParse(match.Groups[1].Value, out var percent))
-                return $"Громкость {SystemController.SetVolumePercent(percent)}%.";
+            var percent = ParseNumber(t);
+            if (percent is int p)
+                return $"Громкость {SystemController.SetVolumePercent(p)}%.";
         }
 
         // ---------- Работа с файлами ----------
@@ -172,7 +203,7 @@ public sealed class CommandProcessor
             };
             return "Закрыть браузер? Несохранённые вкладки будут потеряны. Скажите «да» или «нет».";
         }
-        if (Has(t, "новая вкладка", "новую вкладку", "создай вкладку", "открой вкладку"))
+        if (Has(t, "вкладк") && (Has(t, "нов") || Has(t, "создай") || Has(t, "открой") || Has(t, "открыть") || Has(t, "поставь")))
         {
             SystemController.BrowserNewTab();
             return "Открываю новую вкладку.";
@@ -258,6 +289,41 @@ public sealed class CommandProcessor
 
     private static bool Has(string text, params string[] keys) =>
         keys.Any(k => text.Contains(k, StringComparison.Ordinal));
+
+    /// <summary>Числа словами: «сто» → 100, «пятьдесят пять» → 55 и т.д.</summary>
+    private static readonly Dictionary<string, int> NumberWords = new()
+    {
+        ["ноль"] = 0, ["один"] = 1, ["два"] = 2, ["три"] = 3, ["четыре"] = 4, ["пять"] = 5,
+        ["шесть"] = 6, ["семь"] = 7, ["восемь"] = 8, ["девять"] = 9, ["десять"] = 10,
+        ["пятнадцать"] = 15, ["двадцать"] = 20, ["тридцать"] = 30, ["сорок"] = 40,
+        ["пятьдесят"] = 50, ["шестьдесят"] = 60, ["семьдесят"] = 70, ["восемьдесят"] = 80,
+        ["девяносто"] = 90, ["сто"] = 100, ["полсотни"] = 50
+    };
+
+    /// <summary>Пытается найти в фразе число — цифрой или словами. Возвращает null, если числа нет.</summary>
+    private static int? ParseNumber(string normalizedText)
+    {
+        var digit = Regex.Match(normalizedText, @"\b(\d{1,3})\b");
+        if (digit.Success && int.TryParse(digit.Groups[1].Value, out var fromDigits))
+            return fromDigits;
+
+        int total = 0, current = 0;
+        bool found = false;
+        foreach (var w in normalizedText.Split(' '))
+        {
+            if (!NumberWords.TryGetValue(w, out var v)) continue;
+            found = true;
+            if (v == 100)
+            {
+                total += (current == 0 ? 1 : current) * 100;
+                current = 0;
+            }
+            else if (v >= 10) { total += current; current = v; }
+            else { current += v; }
+        }
+        total += current;
+        return found ? total : null;
+    }
 
     private static string Normalize(string text)
     {

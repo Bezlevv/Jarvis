@@ -138,8 +138,9 @@ public sealed class StatusPill : Control
             g.FillEllipse(brush, 12, Height / 2 - 4, 8, 8);
 
         using (var brush = new SolidBrush(Theme.TextDim))
-            g.DrawString(_text, Font, brush, new Point(28, 0),
-                new StringFormat { LineAlignment = StringAlignment.Center });
+            g.DrawString(_text, Font, brush,
+                new RectangleF(28, 0, Width - 32, Height),
+                new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center });
     }
 }
 
@@ -154,6 +155,7 @@ public sealed class ChipsPanel : Control
         _chips = chips;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        Dock = DockStyle.Bottom;
         Height = 74;
     }
 
