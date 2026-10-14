@@ -35,11 +35,18 @@ public sealed class CommandProcessor
     };
 
     private readonly Action<string> _log;
+    private readonly TimerManager _timers;
+    private readonly List<CustomCommand> _custom;
 
     /// <summary>Ожидающее подтверждение действие (например, «закрыть браузер? да/нет»).</summary>
     private Action? _pending;
 
-    public CommandProcessor(Action<string> log) => _log = log;
+    public CommandProcessor(Action<string> log, TimerManager timers)
+    {
+        _log = log;
+        _timers = timers;
+        _custom = CommandLibrary.Load();
+    }
 
     /// <summary>Выполняет команду. Возвращает текст ответа ассистента (или null, если команда не распознана).</summary>
     public string? Process(string rawText)
@@ -63,6 +70,37 @@ public sealed class CommandProcessor
                 words.Contains("отбой"))
                 return "Хорошо, отменил.";
             // произнесена другая команда — просто сбрасываем ожидание
+        }
+
+        // ---------- Пользовательские команды из commands.json ----------
+        foreach (var cmd in _custom)
+        {
+            bool hit = false;
+            foreach (var phrase in cmd.Phrases)
+            {
+                var p = Normalize(phrase);
+                if (p.Length > 0 && t.Contains(p, StringComparison.Ordinal)) { hit = true; break; }
+            }
+            if (!hit) continue;
+
+            switch (cmd.Action.Trim().ToLowerInvariant())
+            {
+                case "url":
+                    SystemController.OpenUrl(cmd.Value);
+                    return $"Открываю: {cmd.Name}.";
+                case "search":
+                    SystemController.OpenWebSearch(cmd.Value);
+                    return $"Ищу в интернете: {cmd.Value}.";
+                case "app":
+                case "file":
+                case "folder":
+                    SystemController.LaunchApp(cmd.Value);
+                    return $"Выполняю: {cmd.Name}.";
+                case "reply":
+                    return cmd.Value;
+                default:
+                    return $"Команда «{cmd.Name}» настроена неверно: неизвестный тип «{cmd.Action}».";
+            }
         }
 
         // ---------- Приветствие и вежливость ----------
@@ -255,6 +293,48 @@ public sealed class CommandProcessor
                 }
         }
 
+        // ---------- Таймеры и напоминания (до команд питания!) ----------
+        if (Has(t, "таймер", "напомни", "напомнить", "будильник") ||
+            (Has(t, "через") && Has(t, "выключ", "перезагруз", "рестарт")))
+        {
+            if (Has(t, "отмени", "отмена", "убери", "сброс", "хватит", "стоп"))
+            {
+                var cancelled = _timers.CancelAll();
+                return cancelled > 0
+                    ? $"Отменила активных таймеров: {cancelled}."
+                    : "Активных таймеров нет.";
+            }
+
+            var count = ParseNumber(t);
+            if (count is int n && n > 0)
+            {
+                var (delay, unit) = ParseDelay(t, n);
+
+                // Таймер на выключение/перезагрузку — настоящая отложенная команда ОС
+                if (Has(t, "выключ", "перезагруз", "рестарт"))
+                {
+                    int seconds = Math.Max(10, (int)delay.TotalSeconds);
+                    bool restart = Has(t, "перезагруз", "рестарт");
+                    if (restart) SystemController.Restart(seconds);
+                    else SystemController.Shutdown(seconds);
+                    var what = restart ? "перезагружен" : "выключен";
+                    return $"Хорошо, компьютер будет {what} через {FormatSpan(n, unit)}. " +
+                           "Скажите «отмени выключение», чтобы отменить.";
+                }
+
+                var note = Strip(t, "таймер", "таймеры", "напомни", "напомнить",
+                    "напоминание", "будильник", "поставь", "поставить", "через", "сделай");
+                var label = note.Length > 0 ? note : FormatSpan(n, unit);
+                _timers.Start(delay, label);
+                _log($"Таймер запущен: {label} — через {FormatSpan(n, unit)}");
+                return note.Length > 0
+                    ? $"Напомню через {FormatSpan(n, unit)}: {note}."
+                    : $"Таймер запущен: через {FormatSpan(n, unit)}.";
+            }
+
+            return "На сколько поставить таймер? Скажите, например: «таймер на десять минут».";
+        }
+
         // ---------- Питание (после команд со звуком!) ----------
         if (Has(t, "перезагруз", "рестарт", "reboot"))
         {
@@ -289,6 +369,30 @@ public sealed class CommandProcessor
 
     private static bool Has(string text, params string[] keys) =>
         keys.Any(k => text.Contains(k, StringComparison.Ordinal));
+
+    /// <summary>Определяет единицу времени для таймера по ключевым словам фразы.</summary>
+    private static (TimeSpan Delay, string Unit) ParseDelay(string t, int n)
+    {
+        if (Has(t, "секунд", "сек")) return (TimeSpan.FromSeconds(n), "сек");
+        if (Has(t, "час")) return (TimeSpan.FromHours(n), "час");
+        return (TimeSpan.FromMinutes(n), "мин");
+    }
+
+    private static string FormatSpan(int n, string unit) => unit switch
+    {
+        "сек" => $"{n} {Plural(n, "секунду", "секунды", "секунд")}",
+        "час" => $"{n} {Plural(n, "час", "часа", "часов")}",
+        _ => $"{n} {Plural(n, "минуту", "минуты", "минут")}"
+    };
+
+    /// <summary>Русское склонение: «1 минуту», «5 минут», «2 минуты».</summary>
+    private static string Plural(int n, string one, string few, string many)
+    {
+        int m10 = n % 10, m100 = n % 100;
+        if (m10 == 1 && m100 != 11) return one;
+        if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+        return many;
+    }
 
     /// <summary>Числа словами: «сто» → 100, «пятьдесят пять» → 55 и т.д.</summary>
     private static readonly Dictionary<string, int> NumberWords = new()

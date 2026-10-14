@@ -68,6 +68,19 @@ public sealed class MainForm : Form
     private DateTime _awakeUntil = DateTime.MinValue;
     private readonly System.Windows.Forms.Timer _awakeTimer = new() { Interval = AwakeSeconds * 1000 };
 
+    // ----- Таймеры -----
+    private readonly TimerManager _timers = new();
+    private readonly Label _timersLabel = new()
+    {
+        AutoSize = false,
+        Width = 186,
+        Height = 74,
+        Text = "Таймеры: нет",
+        ForeColor = Theme.TextDim,
+        Font = new Font("Segoe UI", 8.5f),
+        Location = new Point(14, 268)
+    };
+
     public MainForm()
     {
         Text = "JARVIS — голосовой ассистент";
@@ -78,13 +91,29 @@ public sealed class MainForm : Form
         MinimumSize = new Size(760, 500);
         Size = new Size(960, 640);
 
-        _processor = new CommandProcessor(msg => AppendLine("  " + msg, Theme.TextDim));
+        _processor = new CommandProcessor(msg => AppendLine("  " + msg, Theme.TextDim), _timers);
 
         BuildLayout();
 
         _micButton.Clicked += async (_, _) => await ToggleAsync();
         _btnClear.Click += (_, _) => _log.Clear();
         _chkSpeak.CheckedChanged += (_, _) => _speaker.Enabled = _chkSpeak.Checked;
+        _timers.Changed += () => { try { BeginInvoke(UpdateTimersLabel); } catch { /* окно закрыто */ } };
+        _timers.Fired += label =>
+        {
+            var msg = "Время вышло: " + label;
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    System.Media.SystemSounds.Exclamation.Play();
+                    AppendLine("⏰ " + msg, Theme.Warning);
+                    _speaker.Speak(msg);
+                    UpdateTimersLabel();
+                });
+            }
+            catch { /* окно закрыто */ }
+        };
         _awakeTimer.Tick += (_, _) =>
         {
             _awakeTimer.Stop();
@@ -166,6 +195,7 @@ public sealed class MainForm : Form
             Location = new Point(14, 244)
         };
         _sidebar.Controls.Add(hintLabel);
+        _sidebar.Controls.Add(_timersLabel);
 
         // Стилизация кнопок
         _btnClear.FlatAppearance.BorderColor = Theme.Border;
@@ -189,7 +219,8 @@ public sealed class MainForm : Form
         {
             "открой блокнот", "открой youtube", "новая вкладка", "закрой вкладку",
             "обнови страницу", "громкость 50", "который час", "поищи погоду в Москве",
-            "открой документы", "закрой браузер", "заблокируй компьютер", "выключи компьютер"
+            "открой документы", "закрой браузер", "заблокируй компьютер", "выключи компьютер",
+            "таймер на 10 минут", "напомни через час позвонить"
         });
 
         var centerPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background, Padding = new Padding(12, 0, 12, 0) };
@@ -229,6 +260,8 @@ public sealed class MainForm : Form
         {
             _modelPath = await Task.Run(() => ModelManager.EnsureModel(msg => BeginInvoke(() => SetStatus("ЗАГРУЗКА МОДЕЛИ...", Theme.Warning))));
             SetStatus("ГОТОВ", Theme.Success);
+            if (_modelPath.Contains("0.42"))
+                AppendLine("Загружена большая модель распознавания — распознаёт с первого раза.", Theme.Success);
             AppendLine("Модель загружена. Включаю микрофон...", Theme.TextDim);
             _ = ToggleAsync(); // слушаем всегда — ждём слова «Джарвис»
         }
@@ -411,6 +444,13 @@ public sealed class MainForm : Form
     {
         _statusPill.SetStatus(text, dotColor);
         _header.Invalidate();
+    }
+
+    /// <summary>Обновляет список активных таймеров на боковой панели.</summary>
+    private void UpdateTimersLabel()
+    {
+        var active = _timers.ActiveText;
+        _timersLabel.Text = active == "нет" ? "Таймеры: нет" : "Таймеры:\n" + active;
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

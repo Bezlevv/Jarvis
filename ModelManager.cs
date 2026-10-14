@@ -14,11 +14,23 @@ public static class ModelManager
     private const string ModelUrl = "https://alphacephei.com/vosk/models/" + ModelName + ".zip";
     private const long ExpectedSize = 45_000_000; // модель ~46 МБ, ниже — загрузка точно оборвалась
 
-    public static string ModelPath => Path.Combine(AppContext.BaseDirectory, "models", ModelName);
+    // ----- Большая модель (точное распознавание с первого раза) -----
+    private const string BigModelName = "vosk-model-ru-0.42";
+    // точные размеры ключевых файлов — проверка целостности по ним
+    private const long BigFinalMdlSize = 118_675_405;
+    private const long BigHclgSize = 847_501_561;
+    private const long BigWordsSize = 57_267_033;
 
-    /// <summary>Возвращает путь к модели, при необходимости скачивая и распаковывая её.</summary>
+    public static string ModelPath => Path.Combine(AppContext.BaseDirectory, "models", ModelName);
+    public static string BigModelPath => Path.Combine(AppContext.BaseDirectory, "models", BigModelName);
+
+    /// <summary>Возвращает путь к модели, при необходимости скачивая и распаковывая её.
+    /// Если скачана большая модель vosk-model-ru-0.42 — используется она.</summary>
     public static string EnsureModel(Action<string> status)
     {
+        if (IsBigModelComplete())
+            return BigModelPath;
+
         if (IsModelComplete())
             return ModelPath;
 
@@ -65,6 +77,15 @@ public static class ModelManager
     private static bool IsModelComplete() =>
         File.Exists(Path.Combine(ModelPath, "am", "final.mdl")) &&
         File.Exists(Path.Combine(ModelPath, "conf", "mfcc.conf"));
+
+    /// <summary>Большая модель полна, если ключевые файлы скачаны целиком (по точному размеру).</summary>
+    private static bool IsBigModelComplete() =>
+        ExactSize(Path.Combine(BigModelPath, "am", "final.mdl"), BigFinalMdlSize) &&
+        ExactSize(Path.Combine(BigModelPath, "graph", "HCLG.fst"), BigHclgSize) &&
+        ExactSize(Path.Combine(BigModelPath, "graph", "words.txt"), BigWordsSize);
+
+    private static bool ExactSize(string path, long size) =>
+        File.Exists(path) && new FileInfo(path).Length == size;
 
     private static void Download(Action<string> status, string zipPath)
     {
